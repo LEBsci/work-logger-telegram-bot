@@ -78,7 +78,9 @@ def init_db() -> None:
                 passphrase_set INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS pending_users (
-                approval_hash TEXT PRIMARY KEY,
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                approval_hash TEXT UNIQUE NOT NULL,
+                user_id       INTEGER NOT NULL,
                 requested_at  TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS logs (
@@ -132,12 +134,26 @@ def is_pending(approval_hash: str) -> bool:
         )
 
 
-def add_pending(approval_hash: str) -> None:
+def add_pending(approval_hash: str, user_id: int) -> int:
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(
-            "INSERT OR IGNORE INTO pending_users (approval_hash, requested_at) VALUES (?, ?)",
-            (approval_hash, _now_utc().isoformat()),
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO pending_users (approval_hash, user_id, requested_at) VALUES (?, ?, ?)",
+            (approval_hash, user_id, _now_utc().isoformat()),
         )
+        if cur.lastrowid:
+            return cur.lastrowid
+        row = conn.execute(
+            "SELECT id FROM pending_users WHERE approval_hash = ?", (approval_hash,)
+        ).fetchone()
+        return row[0]
+
+
+def get_pending(pending_id: int) -> tuple[str, int] | None:
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT approval_hash, user_id FROM pending_users WHERE id = ?", (pending_id,)
+        ).fetchone()
+    return (row[0], row[1]) if row else None
 
 
 def approve_user(approval_hash: str) -> None:
@@ -204,16 +220,12 @@ def _fmt_duration(td: timedelta) -> str:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _approval_keyboard(approval_hash: str, user_id: int) -> InlineKeyboardMarkup:
+def _approval_keyboard(pending_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton(
-                    "✅ Approve", callback_data=f"approve:{approval_hash}:{user_id}"
-                ),
-                InlineKeyboardButton(
-                    "❌ Deny", callback_data=f"deny:{approval_hash}:{user_id}"
-                ),
+                InlineKeyboardButton("✅ Approve", callback_data=f"approve:{pending_id}"),
+                InlineKeyboardButton("❌ Deny",    callback_data=f"deny:{pending_id}"),
             ]
         ]
     )
@@ -242,12 +254,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if is_pending(approval_hash):
             await update.message.reply_text("⏳ Your access request is pending admin approval.")
             return
-        add_pending(approval_hash)
+        pending_id = add_pending(approval_hash, user.id)
         await context.bot.send_message(
             chat_id=ADMIN_ID,
             text=f"🔔 *New access request*\n\n{_display_name(user)} wants to use the Work Logger bot.",
             parse_mode="Markdown",
-            reply_markup=_approval_keyboard(approval_hash, user.id),
+            reply_markup=_approval_keyboard(pending_id),
         )
         await update.message.reply_text(
             "📨 Access request sent to the admin. You'll be notified once approved."
@@ -279,8 +291,14 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     await query.answer()
-    action, approval_hash, user_id_str = query.data.split(":", 2)
-    user_id = int(user_id_str)
+    action, pending_id_str = query.data.split(":", 1)
+    pending = get_pending(int(pending_id_str))
+
+    if pending is None:
+        await query.edit_message_text("⚠️ Request no longer pending.")
+        return
+
+    approval_hash, user_id = pending
 
     if action == "approve":
         approve_user(approval_hash)
@@ -385,8 +403,6 @@ def main() -> None:
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
         raise RuntimeError("Set TELEGRAM_BOT_TOKEN in your .env file.")
-    if not os.environ.get("HASH_SECRET"):
-        raise RuntimeError("Set HASH_SECRET in your .env file.")
     if not os.environ.get("HASH_SECRET"):
         raise RuntimeError("Set HASH_SECRET in your .env file.")
     if not os.environ.get("ADMIN_TELEGRAM_ID"):

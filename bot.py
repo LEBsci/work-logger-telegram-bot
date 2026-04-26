@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hmac
 import hashlib
+import html
 import logging
 import os
 import sqlite3
@@ -170,6 +171,11 @@ def deny_user(approval_hash: str) -> None:
         conn.execute("DELETE FROM pending_users WHERE approval_hash = ?", (approval_hash,))
 
 
+def revoke_user(approval_hash: str) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("DELETE FROM approved_users WHERE approval_hash = ?", (approval_hash,))
+
+
 def _insert_log(data_hash: str, action: str) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
@@ -231,9 +237,10 @@ def _approval_keyboard(pending_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def _display_name(user) -> str:
+def _mention_html(user) -> str:
     name = user.full_name or user.first_name or "Unknown"
-    return f"{name} (@{user.username})" if user.username else name
+    label = f"{name} (@{user.username})" if user.username else name
+    return f'<a href="tg://user?id={user.id}">{html.escape(label)}</a>'
 
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
@@ -257,8 +264,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         pending_id = add_pending(approval_hash, user.id)
         await context.bot.send_message(
             chat_id=ADMIN_ID,
-            text=f"🔔 *New access request*\n\n{_display_name(user)} wants to use the Work Logger bot.",
-            parse_mode="Markdown",
+            text=(
+                f"🔔 <b>New access request</b>\n\n"
+                f"{_mention_html(user)} wants to use the Work Logger bot.\n"
+                f"<code>ID: {user.id}</code>"
+            ),
+            parse_mode="HTML",
             reply_markup=_approval_keyboard(pending_id),
         )
         await update.message.reply_text(
@@ -314,6 +325,70 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             chat_id=user_id,
             text="❌ Your access request was denied.",
         )
+
+
+async def cmd_admin_approve(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /approve <user_id>")
+        return
+
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("Invalid user ID — must be a number.")
+        return
+
+    ah = _approval_hash(target_id)
+
+    if is_approved(ah):
+        await update.message.reply_text("User is already approved.")
+        return
+
+    approve_user(ah)
+    await update.message.reply_text(f"✅ User {target_id} approved.")
+
+    try:
+        await context.bot.send_message(
+            chat_id=target_id,
+            text="✅ Your access has been approved! Send /start to continue.",
+        )
+    except Exception:
+        await update.message.reply_text("(Could not notify the user — they may not have started the bot yet.)")
+
+
+async def cmd_admin_deny(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /deny <user_id>")
+        return
+
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("Invalid user ID — must be a number.")
+        return
+
+    ah = _approval_hash(target_id)
+
+    if not is_approved(ah):
+        await update.message.reply_text("User is not currently approved.")
+        return
+
+    revoke_user(ah)
+    await update.message.reply_text(f"❌ User {target_id} access revoked.")
+
+    try:
+        await context.bot.send_message(
+            chat_id=target_id,
+            text="❌ Your access has been revoked by the admin.",
+        )
+    except Exception:
+        pass
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -414,6 +489,8 @@ def main() -> None:
 
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("approve", cmd_admin_approve))
+    app.add_handler(CommandHandler("deny", cmd_admin_deny))
     app.add_handler(CallbackQueryHandler(handle_approval, pattern=r"^(approve|deny):"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 

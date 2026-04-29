@@ -1,13 +1,44 @@
 # Work Logger Telegram Bot
 
-A Telegram bot for tracking work hours. Users log in and out via a persistent keyboard, and can request a summary of hours worked today, this week, or this month.
+A Telegram bot for tracking work hours. Users log in and out via a persistent keyboard, request summaries, manage past entries, and set their own timezone.
 
 ## Features
 
 - **Log In / Log Out** — one-tap time tracking via a persistent reply keyboard
-- **Summary** — breakdown of hours worked today, this week, and this month; counts an open session if the user is currently logged in
-- **Admin approval** — new users must be approved before they can use the bot; the admin receives an inline Approve/Deny prompt in Telegram
-- **Two-factor anonymisation** — log data in the database is stored under a hash derived from both a server secret and the user's own passphrase; neither factor alone is enough to identify a user's records
+- **Summary** — breakdown of hours worked today, this week, and this month; counts an open session if currently logged in; displayed in the user's configured timezone
+- **Add Entry** — add a past login or logout via an inline calendar, hour grid, and free-text minute input; time is interpreted in the user's timezone
+- **Delete Entry** — browse entries by year → month → day and delete individual records with a confirmation step
+- **Timezone** — each user sets their own timezone; all displayed times and day/week/month boundaries respect it
+- **Admin approval** — new users must be approved before they can use the bot; the admin receives an inline Approve/Deny prompt with a tappable profile link and a copyable user ID
+- **Two-factor anonymisation** — log data is stored under a hash derived from both a server secret and the user's own passphrase; neither factor alone is enough to identify a user's records
+
+## Keyboard
+
+```
+[ 🟢 Log In ]   [ 🔴 Log Out ]
+[       📊 Summary        ]
+[ ➕ Add Entry ] [ 🗑 Delete Entry ]
+[     🌍 Set Timezone     ]
+```
+
+## Admin commands
+
+| Command | Description |
+|---|---|
+| `/approve <user_id>` | Grant access to a user (works even after a previous denial) |
+| `/deny <user_id>` | Revoke access from an approved user |
+
+The user's Telegram ID appears in every approval notification so it can be copied for later use.
+
+## Add Entry flow
+
+1. Tap **➕ Add Entry** → choose **Login** or **Logout**
+2. Pick a date from the inline calendar (past dates only)
+3. Pick an hour from the grid (00–23)
+4. Type the minutes as a number (0–59)
+5. Confirm or cancel
+
+All times are entered in the user's configured timezone and stored as UTC.
 
 ## Privacy model
 
@@ -78,10 +109,10 @@ The bot falls back to long polling automatically when no webhook domain is confi
 ## User flow
 
 1. User sends `/start`
-2. Bot sends the admin an approval request with **Approve / Deny** buttons
-3. Admin taps Approve — user is notified and prompted to set a personal passphrase
-4. User sets their passphrase (minimum 4 characters, never stored)
-5. The persistent keyboard appears and the user can start logging hours
+2. Bot notifies the admin — admin taps **Approve** or **Deny**
+3. Approved user is prompted to set a personal passphrase (minimum 4 characters, never stored)
+4. The persistent keyboard appears; user sets their timezone via **🌍 Set Timezone**
+5. User tracks hours with **Log In** / **Log Out**; past entries can be added or deleted at any time
 6. On bot restart the user re-enters their passphrase via `/start` to restore their session
 
 ## Project structure
